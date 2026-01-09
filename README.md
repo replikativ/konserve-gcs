@@ -134,14 +134,9 @@ docker-compose up -d
    :id #uuid "550e8400-e29b-41d4-a716-446655440000"})
 ```
 
-## Commercial support
-
-We are happy to provide commercial support with
-[lambdaforge](https://lambdaforge.io). If you are interested in a particular
-feature, please let us know.
 
 ## License
 
-Copyright © 2023-2026 Christian Weilbach
+Copyright © 2024-2026 Patrick Killean, Christian Weilbach
 
-Licensed under Eclipse Public License (see [LICENSE](LICENSE)).
+Licensed under MIT (see [LICENSE](LICENSE)).
