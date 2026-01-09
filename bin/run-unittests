@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+#
+# Run konserve-gcs unit tests with fake-gcs-server emulator
+#
+# Usage: ./bin/run-unittests [kaocha-args...]
+#
+# Examples:
+#   ./bin/run-unittests                                    # Run all emulator tests
+#   ./bin/run-unittests --focus konserve-gcs.emulator-test/emulator-compliance-sync-test
+#
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+cd "$PROJECT_DIR"
+
+echo "==> Starting fake-gcs-server emulator..."
+docker-compose up -d
+
+# Wait for emulator to be ready
+echo "==> Waiting for emulator to be ready..."
+max_attempts=30
+attempt=0
+until docker-compose exec -T fake-gcs wget -q --spider http://localhost:4443/storage/v1/b 2>/dev/null; do
+    attempt=$((attempt + 1))
+    if [ $attempt -ge $max_attempts ]; then
+        echo "ERROR: Emulator failed to start after $max_attempts attempts"
+        docker-compose down
+        exit 1
+    fi
+    echo "    Waiting... (attempt $attempt/$max_attempts)"
+    sleep 1
+done
+echo "==> Emulator is ready!"
+
+# Run tests and capture exit code
+echo "==> Running tests..."
+set +e
+clojure -M:test -m kaocha.runner :emulator "$@"
+TEST_EXIT_CODE=$?
+set -e
+
+# Always tear down
+echo "==> Tearing down emulator..."
+docker-compose down
+
+# Exit with test exit code
+if [ $TEST_EXIT_CODE -eq 0 ]; then
+    echo "==> Tests passed!"
+else
+    echo "==> Tests failed with exit code $TEST_EXIT_CODE"
+fi
+
+exit $TEST_EXIT_CODE

@@ -1,11 +1,12 @@
 {:paths ["src"]
  :deps {com.google.cloud/google-cloud-storage   {:mvn/version "2.42.0"}
-        io.replikativ/konserve                  {:mvn/version "0.7.315"
+        io.replikativ/konserve                  {:mvn/version "0.9.332"
                                                  :exclusions [com.github.pkpkpk/cljs-node-io
                                                               com.github.pkpkpk/fress
                                                               fress/fress
                                                               org.clojure/clojurescript
-                                                              org.clojars.mmb90/cljs-cache]}}
+                                                              org.clojars.mmb90/cljs-cache]}
+        io.replikativ/superv.async              {:mvn/version "0.3.43"}}
  :aliases
  {:dev
   {:extra-paths ["test"]
@@ -13,15 +14,24 @@
                                                          :git/sha "0fb62c46e2317d143dbf30001b6e36cad56de86f"
                                                          :exclusions [io.replikativ/konserve]}
                 com.github.pkpkpk/fress {:mvn/version "0.4.312"
-                                         :exclusions [org.clojure/clojurescript]}}}
+                                         :exclusions [org.clojure/clojurescript]}
+                lambdaisland/kaocha {:mvn/version "1.60.977"}}}
   :test
   {:extra-paths ["test"]
-   :exec-fn cognitect.test-runner.api/test
-   :main-opts ["-m" "cognitect.test-runner"]
    :extra-deps {com.literalco/konserve-compliance-tests {:git/url "https://github.com/The-Literal-Company/konserve-compliance-tests.git"
                                                          :git/sha "0fb62c46e2317d143dbf30001b6e36cad56de86f"
                                                          :exclusions [io.replikativ/konserve]}
                 com.github.pkpkpk/fress {:mvn/version "0.4.312"
                                          :exclusions [org.clojure/clojurescript]}
-                io.github.cognitect-labs/test-runner {:git/tag "v0.5.1"
-                                                      :git/sha "dfb30dd"}}}}}
+                lambdaisland/kaocha {:mvn/version "1.60.977"}}}
+  :format {:extra-deps {cljfmt/cljfmt {:mvn/version "0.7.0"}}
+           :main-opts ["-m" "cljfmt.main" "check"]}
+  :ffix   {:extra-deps {cljfmt/cljfmt {:mvn/version "0.8.0"}}
+           :main-opts ["-m" "cljfmt.main" "fix"]}
+  :build  {:deps {io.github.clojure/tools.build          {:mvn/version "0.9.3"}
+                  slipset/deps-deploy                    {:mvn/version "0.2.0"}
+                  io.github.borkdude/gh-release-artifact {:git/sha "05f8d8659e6805d513c59447ff41dc8497878462"}
+                  babashka/babashka.curl                 {:mvn/version "0.1.2"}
+                  babashka/fs                            {:mvn/version "0.1.6"}
+                  cheshire/cheshire                      {:mvn/version "5.10.2"}}
+           :ns-default build}}}
