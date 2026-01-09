@@ -22,20 +22,20 @@
   (let [spec {:bucket     KONSERVE_TEST_BUCKET
               :location   KONSERVE_TEST_BUCKET_LOCATION
               :store-path "compliance_test_store"}
-        _(kgcs/delete-store spec)
+        _ (kgcs/delete-store spec)
         store  (kgcs/connect-store spec :opts {:sync? true})]
     (testing "Compliance test with default config."
       (compliance-test store))))
 
-;#!============
-;#! Cache tests
+;; ============
+;; Cache tests
 
 (deftest cache-PEDNKeyValueStore-test
   (log/info "starting cache-PEDNKeyValueStore-test")
   (let [spec {:bucket     KONSERVE_TEST_BUCKET
               :location   KONSERVE_TEST_BUCKET_LOCATION
               :store-path "cache_test_store"}
-        _(kgcs/delete-store spec)
+        _ (kgcs/delete-store spec)
         store (kgcs/connect-store spec :opts {:sync? true})]
     (<!! (ct/test-cached-PEDNKeyValueStore-async store))))
 
@@ -44,7 +44,7 @@
   (let [spec {:bucket     KONSERVE_TEST_BUCKET
               :location   KONSERVE_TEST_BUCKET_LOCATION
               :store-path "cache_test_store"}
-        _(kgcs/delete-store spec)
+        _ (kgcs/delete-store spec)
         store (kgcs/connect-store spec :opts {:sync? true})]
     (<!! (ct/test-cached-PKeyIterable-async store))))
 
@@ -53,26 +53,26 @@
   (let [spec {:bucket     KONSERVE_TEST_BUCKET
               :location   KONSERVE_TEST_BUCKET_LOCATION
               :store-path "cache_test_store"}
-        _(kgcs/delete-store spec)
+        _ (kgcs/delete-store spec)
         store (kgcs/connect-store spec :opts {:sync? true})
         f (fn [{:keys [input-stream]}]
             (async/to-chan! [input-stream]))]
     (<!! (ct/test-cached-PBin-async store f))))
 
-#!============
-#! GC tests
+;; ============
+;; GC tests
 
 (deftest gc-test
   (log/info "starting gc-test")
   (let [spec {:bucket     KONSERVE_TEST_BUCKET
               :location   KONSERVE_TEST_BUCKET_LOCATION
               :store-path "gc_test_store"}
-        _(kgcs/delete-store spec)
+        _ (kgcs/delete-store spec)
         store (kgcs/connect-store spec :opts {:sync? true})]
     (<!! (gct/test-gc-async store))))
 
-#!==================
-#! Serializers tests
+;; ==================
+;; Serializers tests
 
 (deftest fressian-serializer-test
   (log/info "starting fressian-serializer-test")
@@ -94,8 +94,8 @@
                              kgcs/connect-store
                              (fn [p] (go (kgcs/delete-store p))))))
 
-#!==================
-#! Encryptor tests
+;; ==================
+;; Encryptor tests
 
 (deftest encryptor-sync-test
   (let [spec {:bucket     KONSERVE_TEST_BUCKET

@@ -1,2 +1,6 @@
 .cpcache
 *.iml
+target/
+.nrepl-port
+.lsp/
+.clj-kondo/

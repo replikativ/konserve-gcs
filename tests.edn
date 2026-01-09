@@ -1,0 +1,8 @@
+#kaocha/v1
+{:tests [{:id :emulator
+          :test-paths ["test"]
+          :ns-patterns ["konserve-gcs.emulator-test"]}
+         {:id :cloud
+          :test-paths ["test"]
+          :ns-patterns ["konserve-gcs.core-test"]}]
+ :kaocha/fail-fast? false}
