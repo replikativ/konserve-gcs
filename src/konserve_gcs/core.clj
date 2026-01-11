@@ -425,5 +425,6 @@
                  (delete-store spec :opts opts)))))
 
 (defmethod store/-release-store :gcs
-  [_config store _opts]
-  (release store {:sync? true}))
+  [_config store opts]
+  ;; Release respecting caller's sync mode
+  (release store opts))
