@@ -1,18 +1,18 @@
 {:paths ["src"]
  :deps {com.google.cloud/google-cloud-storage   {:mvn/version "2.42.0"}
-        io.replikativ/konserve                  {:mvn/version "0.9.338"
+        org.replikativ/konserve                 {:mvn/version "0.9.342"
                                                  :exclusions [com.github.pkpkpk/cljs-node-io
                                                               com.github.pkpkpk/fress
                                                               fress/fress
                                                               org.clojure/clojurescript
                                                               org.clojars.mmb90/cljs-cache]}
-        io.replikativ/superv.async              {:mvn/version "0.3.43"}}
+        org.replikativ/superv.async             {:mvn/version "0.3.50"}}
  :aliases
  {:dev
   {:extra-paths ["test"]
    :extra-deps {com.literalco/konserve-compliance-tests {:git/url "https://github.com/The-Literal-Company/konserve-compliance-tests.git"
                                                          :git/sha "0fb62c46e2317d143dbf30001b6e36cad56de86f"
-                                                         :exclusions [io.replikativ/konserve]}
+                                                         :exclusions [org.replikativ/konserve]}
                 com.github.pkpkpk/fress {:mvn/version "0.4.312"
                                          :exclusions [org.clojure/clojurescript]}
                 lambdaisland/kaocha {:mvn/version "1.60.977"}}}
@@ -20,7 +20,7 @@
   {:extra-paths ["test"]
    :extra-deps {com.literalco/konserve-compliance-tests {:git/url "https://github.com/The-Literal-Company/konserve-compliance-tests.git"
                                                          :git/sha "0fb62c46e2317d143dbf30001b6e36cad56de86f"
-                                                         :exclusions [io.replikativ/konserve]}
+                                                         :exclusions [org.replikativ/konserve]}
                 com.github.pkpkpk/fress {:mvn/version "0.4.312"
                                          :exclusions [org.clojure/clojurescript]}
                 lambdaisland/kaocha {:mvn/version "1.60.977"}}}

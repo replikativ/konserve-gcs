@@ -7,7 +7,7 @@ A backend for [konserve](https://github.com/replikativ/konserve) that supports G
 
 Add to your dependencies:
 
-[![Clojars Project](http://clojars.org/io.replikativ/konserve-gcs/latest-version.svg)](http://clojars.org/io.replikativ/konserve-gcs)
+[![Clojars Project](http://clojars.org/org.replikativ/konserve-gcs/latest-version.svg)](http://clojars.org/org.replikativ/konserve-gcs)
 
 ### Configuration
 
