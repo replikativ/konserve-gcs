@@ -384,7 +384,7 @@
                  (when-not exists
                    (throw (ex-info (str "GCS store does not exist at: " bucket "/" (spec->store-path spec))
                                    {:bucket bucket :config config})))
-                 (connect-store spec :opts opts)))))
+                 (<?- (connect-store spec :opts opts))))))
 
 (defmethod store/-create-store :gcs
   [{:keys [bucket location] :as config} opts]
@@ -403,7 +403,7 @@
                    (create-bucket client location bucket))
         ;; Write store marker
                  (write-store-marker client bucket store-path)
-                 (connect-store spec :opts opts)))))
+                 (<?- (connect-store spec :opts opts))))))
 
 (defmethod store/-store-exists? :gcs
   [{:keys [bucket] :as config} opts]
