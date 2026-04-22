@@ -6,6 +6,7 @@
                                                               fress/fress
                                                               org.clojure/clojurescript
                                                               org.clojars.mmb90/cljs-cache]}
+        org.replikativ/logging                  {:mvn/version "0.1.0"}
         org.replikativ/superv.async             {:mvn/version "0.3.50"}}
  :aliases
  {:dev
