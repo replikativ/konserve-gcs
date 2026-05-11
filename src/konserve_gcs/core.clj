@@ -4,7 +4,7 @@
             [konserve.utils :refer [async+sync *default-sync-translation*]]
             [konserve.store :as store]
             [superv.async :refer [go-try- <?-]]
-            [taoensso.timbre :as log :refer [info trace]])
+            [replikativ.logging :as log :refer [info trace]])
   (:import [java.io ByteArrayInputStream ByteArrayOutputStream]
            [java.util Arrays]
            [com.google.cloud.storage Blob
@@ -292,7 +292,20 @@
                                            (.endsWith key ".ksv.new")
                                            (.endsWith key ".ksv.backup")))))
                ;; remove store-id prefix
-                        (map #(subs % (inc (count store-path))))))))))
+                        (map #(subs % (inc (count store-path)))))))))
+
+  impl/PMultiWriteBackingStore
+  (-multi-delete-blobs [_ store-keys env]
+    (async+sync (:sync? env) *default-sync-translation*
+                (go-try-
+                 (let [full-paths (map #(str store-path "/" %) store-keys)
+                       results (delete-many-blobs client bucket full-paths)]
+                   ;; GCS delete returns List<Boolean> matching the input Iterable order
+                   (into {} (map vector store-keys results))))))
+  (-multi-write-blobs [_ store-key-values env]
+    (async+sync (:sync? env) *default-sync-translation*
+                (go-try-
+                 (throw (ex-info "multi-write-blobs not yet implemented for konserve-gcs" {}))))))
 
 (comment
   {:bucket   "konserve-demo"
