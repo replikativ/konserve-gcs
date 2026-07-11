@@ -5,6 +5,7 @@
    Then: clojure -X:test"
   (:require [clojure.test :refer [deftest testing is]]
             [konserve.compliance-test :refer [compliance-test]]
+            [konserve.impl.storage-layout :as sl]
             [konserve-gcs.core :as gcs]
             [konserve.core :as k]
             [konserve.store :as store])
@@ -174,3 +175,9 @@
 
       ;; Clean up
       (store/delete-store spec {:sync? true}))))
+
+(deftest emulator-read-miss-safe-marker-test
+  (testing "GCS backing implements PReadMissSafe (io-operation skips the -blob-exists? probe on reads)"
+    (ensure-bucket emulator-spec)
+    (let [store (gcs/connect-store (assoc emulator-spec :store-path "miss-safe-marker") :opts {:sync? true})]
+      (is (satisfies? sl/PReadMissSafe (:backing store))))))

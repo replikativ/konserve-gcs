@@ -1,6 +1,7 @@
 (ns konserve-gcs.core
   (:require [konserve.impl.defaults :as defaults]
-            [konserve.impl.storage-layout :as impl :refer [PBackingLock -delete-store]]
+            [konserve.impl.storage-layout :as impl
+             :refer [PBackingLock PReadMissSafe store-key-not-found-ex -delete-store]]
             [konserve.utils :refer [async+sync *default-sync-translation*]]
             [konserve.store :as store]
             [superv.async :refer [go-try- <?-]]
@@ -44,17 +45,21 @@
     (.readAllBytes client blob-id opts)))
 
 (defn read-blob-with-generation
-  "Read blob and return map with :data and :generation, or nil if not found.
-   Returns nil if blob doesn't exist or was updated during read (stale generation)."
+  "Read blob and return {:data :generation}, ::not-found if the blob is genuinely
+   absent (`.get` returns nil), or nil if it was deleted DURING the read (404 —
+   stale generation, i.e. a concurrent-modification conflict). The two absent
+   cases are distinguished so PReadMissSafe can turn a genuine miss into
+   store-key-not-found while optimistic locking still sees the conflict."
   [^Storage client ^BlobId blob-id]
   (try
     (let [opts (into-array Storage$BlobGetOption [])
           ^Blob blob (.get client blob-id opts)]
-      (when blob
+      (if blob
         {:data (.getContent blob (into-array Blob$BlobSourceOption []))
-         :generation (.getGeneration blob)}))
+         :generation (.getGeneration blob)}
+        ::not-found))
     (catch StorageException e
-      ;; 404 can happen if blob was deleted or generation is stale
+      ;; 404 here = deleted between .get and .getContent (stale) -> nil (conflict)
       (when-not (= 404 (.getCode e))
         (throw e)))))
 
@@ -122,20 +127,29 @@
                          response (if (pos? optimistic-locking-retries)
                            ;; Fetch with generation for optimistic locking
                                     (read-blob-with-generation client bid)
-                           ;; Regular fetch without generation
-                                    {:data (read-blob client bid)
-                                     :generation nil})]
+                           ;; Regular fetch — a genuine miss (404) is ::not-found so
+                           ;; the read-first (PReadMissSafe) path reports a clean miss.
+                                    (try {:data (read-blob client bid) :generation nil}
+                                         (catch StorageException e
+                                           (if (= 404 (.getCode e)) ::not-found (throw e)))))]
+                     (cond
+                       ;; PReadMissSafe: an absent key throws store-key-not-found-ex,
+                       ;; which io-operation converts to the caller's :not-found.
+                       (= response ::not-found)
+                       (throw (store-key-not-found-ex blob-key))
             ;; If read fails during optimistic locking (concurrent update), signal conflict
-                     (when (and (pos? optimistic-locking-retries) (nil? response))
+                       (and (pos? optimistic-locking-retries) (nil? response))
                        (throw (ex-info "Optimistic lock conflict - blob was concurrently modified during read"
                                        {:type :optimistic-lock-conflict
-                                        :key blob-key})))
-                     (reset! fetched-object (:data response))
+                                        :key blob-key}))
+                       :else
+                       (do
+                         (reset! fetched-object (:data response))
             ;; Store generation in bucket's cache for later use
-                     (when (:generation response)
-                       (reset! generation (:generation response))
-                       (when-let [cache (:generation-cache bucket-store)]
-                         (swap! cache assoc blob-key (:generation response))))))
+                         (when (:generation response)
+                           (reset! generation (:generation response))
+                           (when-let [cache (:generation-cache bucket-store)]
+                             (swap! cache assoc blob-key (:generation response))))))))
                  (Arrays/copyOfRange ^bytes @fetched-object (int 0) (int impl/header-size)))))
   (-read-meta [_ meta-size env]
     (async+sync (:sync? env) *default-sync-translation*
@@ -293,6 +307,14 @@
                                            (.endsWith key ".ksv.backup")))))
                ;; remove store-id prefix
                         (map #(subs % (inc (count store-path))))))))))
+
+;; GCS reads are read-miss-safe: -create-blob only constructs a CloudStorageBlob
+;; (no side effect / no materialization), and -read-header throws
+;; store-key-not-found-ex on a genuine 404. So io-operation skips the -blob-exists?
+;; probe — a read is one object fetch instead of a metadata .get + readAllBytes,
+;; and update-in/assoc-in/bassoc drop their probe too.
+(extend-type CloudStorageBucket
+  PReadMissSafe)
 
 (comment
   {:bucket   "konserve-demo"
