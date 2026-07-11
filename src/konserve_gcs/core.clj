@@ -5,7 +5,7 @@
             [konserve.utils :refer [async+sync *default-sync-translation*]]
             [konserve.store :as store]
             [superv.async :refer [go-try- <?-]]
-            [taoensso.timbre :as log :refer [info trace]])
+            [replikativ.logging :as log])
   (:import [java.io ByteArrayInputStream ByteArrayOutputStream]
            [java.util Arrays]
            [com.google.cloud.storage Blob
@@ -275,7 +275,7 @@
     (async+sync (:sync? env) *default-sync-translation*
                 (go-try-
                  (when-not (get-bucket client bucket)
-                   (log/info (str "creating bucket " bucket))
+                   (log/info :konserve.gcs/creating-bucket (str "creating bucket " bucket))
                    (create-bucket client location bucket)))))
   (-sync-store [_ env]
     (if (:sync? env) nil (go-try- nil)))
@@ -421,7 +421,7 @@
                                    {:bucket bucket :config config})))
         ;; Ensure bucket exists
                  (when-not (get-bucket client bucket)
-                   (log/info (str "Creating bucket " bucket))
+                   (log/info :konserve.gcs/creating-bucket (str "Creating bucket " bucket))
                    (create-bucket client location bucket))
         ;; Write store marker
                  (write-store-marker client bucket store-path)
