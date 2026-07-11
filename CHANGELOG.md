@@ -13,9 +13,10 @@ All notable, user-visible changes to konserve-gcs are documented here.
   it too. Requires konserve `0.9.354`+.
 
 ### Changed
-- konserve `0.9.342` → `0.9.354`. Declares `com.taoensso/timbre` explicitly —
-  konserve `0.9.353`+ no longer pulls it transitively (it moved to
-  `org.replikativ/logging`).
+- konserve `0.9.342` → `0.9.354`.
+- **Logging: switched from `taoensso.timbre` to `org.replikativ/logging`** — the
+  unified logging library used across the konserve backends. Log events are now
+  keyword-tagged (e.g. `:konserve.gcs/creating-bucket`).
 - CI now runs the emulator compliance suite (sync + async) against a
   `fake-gcs-server` service container, plus a smoke load-check that catches a stale
   konserve pin; the release is gated on both.

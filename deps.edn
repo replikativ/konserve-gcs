@@ -7,9 +7,7 @@
                                                               org.clojure/clojurescript
                                                               org.clojars.mmb90/cljs-cache]}
         org.replikativ/superv.async             {:mvn/version "0.3.50"}
-        ;; konserve >= 0.9.353 no longer pulls timbre transitively (it moved to
-        ;; org.replikativ/logging); this ns still uses timbre, so declare it.
-        com.taoensso/timbre                     {:mvn/version "6.5.0"}}
+        org.replikativ/logging                  {:mvn/version "0.1.3"}}
  :aliases
  {:dev
   {:extra-paths ["test"]
