@@ -1,12 +1,15 @@
 {:paths ["src"]
  :deps {com.google.cloud/google-cloud-storage   {:mvn/version "2.42.0"}
-        org.replikativ/konserve                 {:mvn/version "0.9.342"
+        org.replikativ/konserve                 {:mvn/version "0.9.354"
                                                  :exclusions [com.github.pkpkpk/cljs-node-io
                                                               com.github.pkpkpk/fress
                                                               fress/fress
                                                               org.clojure/clojurescript
                                                               org.clojars.mmb90/cljs-cache]}
-        org.replikativ/superv.async             {:mvn/version "0.3.50"}}
+        org.replikativ/superv.async             {:mvn/version "0.3.50"}
+        ;; konserve >= 0.9.353 no longer pulls timbre transitively (it moved to
+        ;; org.replikativ/logging); this ns still uses timbre, so declare it.
+        com.taoensso/timbre                     {:mvn/version "6.5.0"}}
  :aliases
  {:dev
   {:extra-paths ["test"]

@@ -3,6 +3,40 @@ version: 2.1
 orbs:
   tools: replikativ/clj-tools@0
 
+jobs:
+  # Cheap, always-on gate: load the namespace against the PINNED konserve, with no
+  # external service. A stale/incompatible konserve pin (e.g. one missing
+  # PReadMissSafe, or one that dropped a transitive dep this ns relies on) fails
+  # here immediately.
+  smoke:
+    docker:
+      - image: clojure:temurin-21-tools-deps
+    steps:
+      - checkout
+      - run:
+          name: load namespace against pinned konserve
+          command: clojure -M -e "(require 'konserve-gcs.core)(println :loaded)"
+
+  # Emulator tests against a fake-gcs-server service container. On the docker
+  # executor the secondary image is reachable on localhost:4443, matching the
+  # tests' emulator-spec; the tests self-create the bucket.
+  unittest:
+    docker:
+      - image: clojure:temurin-21-tools-deps
+      - image: fsouza/fake-gcs-server
+        command: -scheme http -port 4443
+    steps:
+      - checkout
+      - run:
+          name: wait for fake-gcs-server on :4443
+          command: |
+            for i in $(seq 1 60); do (echo > /dev/tcp/localhost/4443) 2>/dev/null && exit 0; sleep 1; done
+            echo "fake-gcs-server did not come up on :4443"; exit 1
+      - run:
+          name: run emulator compliance tests
+          command: |
+            clojure -M:test -e "(require '[clojure.test :as t] 'konserve-gcs.emulator-test)(let [{:keys [fail error]} (t/run-tests 'konserve-gcs.emulator-test)](when (or (pos? fail) (pos? error)) (System/exit 1)))"
+
 workflows:
   build-test-and-deploy:
     jobs:
@@ -16,7 +50,8 @@ workflows:
           context: docker-deploy
           requires:
             - tools/setup
-      # Emulator tests skipped in CI - run locally with ./bin/run-unittests
+      - smoke
+      - unittest
       - tools/deploy:
           context:
             - clojars-deploy
@@ -27,6 +62,8 @@ workflows:
           requires:
             - tools/build
             - tools/format
+            - smoke
+            - unittest
       - tools/release:
           context:
             - github-token
