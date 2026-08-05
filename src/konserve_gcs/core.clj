@@ -350,11 +350,26 @@
                               :lock-blob? true}
                              (:config spec)  ;; Config from spec
                              config)         ;; Config from params
-        store-config (merge {:opts               opts
-                             :config             merged-config
-                             :default-serializer :FressianSerializer
-                             :buffer-size        (* 1024 1024)}
-                            (dissoc params :opts :config))]
+        ;; Normalised BEFORE our own serializer default is filled.
+        ;;
+        ;; This backend already forwarded both `:config` and
+        ;; `:default-serializer` correctly -- unlike its siblings, which
+        ;; dropped or hardcoded one or the other -- so the only thing wrong
+        ;; was emitting the OLD spelling as our default, which trips konserve
+        ;; 0.9.369's deprecation warning on every connect, for every caller,
+        ;; whatever they passed. A warning nobody can act on is noise and
+        ;; drowns the ones they can.
+        ;;
+        ;; Order is the trap: filling the Fressian default first would let it
+        ;; occupy the slot and silently drop a caller's older
+        ;; `:default-serializer :BoringSerializer`.
+        store-config (-> (dissoc params :opts :config)
+                         (assoc :config merged-config)
+                         defaults/normalize-store-config
+                         (update-in [:config :encoding]
+                                    #(merge {:serializer :FressianSerializer} %))
+                         (update :buffer-size #(or % (* 1024 1024)))
+                         (assoc :opts opts))]
     (defaults/connect-default-store backing store-config)))
 
 (defn release [store env]
