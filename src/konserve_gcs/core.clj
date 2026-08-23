@@ -1,5 +1,6 @@
 (ns konserve-gcs.core
-  (:require [konserve.impl.defaults :as defaults]
+  (:require [konserve.impl.defaults :as defaults :refer [absent]]
+            [konserve.protocols :as protocols]
             [konserve.impl.storage-layout :as impl
              :refer [PBackingLock PReadMissSafe store-key-not-found-ex -delete-store]]
             [konserve.utils :refer [async+sync *default-sync-translation*]]
@@ -51,26 +52,61 @@
    cases are distinguished so PReadMissSafe can turn a genuine miss into
    store-key-not-found while optimistic locking still sees the conflict."
   [^Storage client ^BlobId blob-id]
-  (try
-    (let [opts (into-array Storage$BlobGetOption [])
-          ^Blob blob (.get client blob-id opts)]
-      (if blob
-        {:data (.getContent blob (into-array Blob$BlobSourceOption []))
-         :generation (.getGeneration blob)}
-        ::not-found))
-    (catch StorageException e
-      ;; 404 here = deleted between .get and .getContent (stale) -> nil (conflict)
-      (when-not (= 404 (.getCode e))
-        (throw e)))))
+  ;; RE-READ on a stale generation rather than reporting anything.
+  ;;
+  ;; `.getContent` is pinned to the generation `.get` returned, so a concurrent
+  ;; OVERWRITE — not only a delete — makes it 404 once the old generation is gone.
+  ;; Neither answer available at that point is true: calling it a miss makes a key
+  ;; that plainly exists read as absent, and calling it a conflict fails an
+  ;; ordinary read merely because another writer was active. Both were tried and
+  ;; the emulator's concurrency test rejected each in turn.
+  ;;
+  ;; What the caller wants is the pair (bytes, generation) taken from ONE state,
+  ;; and after an overwrite there simply is a newer one to read. So read again.
+  ;; Bounded, because a key under constant rewriting should surface as an error
+  ;; rather than spin.
+  (loop [attempt 0]
+    (let [result (try
+                   (let [opts (into-array Storage$BlobGetOption [])
+                         ^Blob blob (.get client blob-id opts)]
+                     (if blob
+                       {:data (.getContent blob (into-array Blob$BlobSourceOption []))
+                        :generation (.getGeneration blob)}
+                       ::not-found))
+                   (catch StorageException e
+                     ;; 404 here = the generation we resolved is already gone
+                     (if (= 404 (.getCode e))
+                       ::stale
+                       (throw e))))]
+      (cond
+        (not= ::stale result) result
+        (< attempt 10) (recur (inc attempt))
+        :else (throw (ex-info (str "Could not read a consistent generation for this object: it was "
+                                   "overwritten on every attempt.")
+                              {:type :konserve/read-generation-unstable
+                               :blob (str blob-id)}))))))
 
 (defn write-blob-conditional
-  "Write blob with generation match precondition. Returns true on success, false on conflict.
-   GCS returns HTTP 412 (Precondition Failed) when generation doesn't match."
-  [^Storage client ^BlobId blob-id ^bytes bytes ^Long expected-generation]
+  "Write `bytes` only if the object's generation is still `expected-generation`, or
+   — when that is `:absent` — only if there is no object. True on success, false
+   when GCS refuses.
+
+   GCS evaluates the precondition itself, which is what makes this backing's
+   guarantee `:global`: the comparison and the write are one step against every
+   writer anywhere, not merely those sharing a filesystem or a heap.
+
+   Create-if-absent is `ifGenerationMatch(0)`. Zero is GCS's way of saying THE
+   OBJECT MUST NOT EXIST, and using it keeps both halves of the contract on one
+   mechanism rather than adding a separate existence probe that another writer
+   could slip past.
+
+   412 is the refusal in both cases."
+  [^Storage client ^BlobId blob-id ^bytes bytes expected-generation]
   (try
     (let [blob-info (.build (BlobInfo/newBuilder blob-id))
           opts (into-array Storage$BlobTargetOption
-                           [(Storage$BlobTargetOption/generationMatch expected-generation)])]
+                           [(Storage$BlobTargetOption/generationMatch
+                             (if (= :absent expected-generation) 0 (long expected-generation)))])]
       (.create client blob-info bytes opts)
       true)
     (catch StorageException e
@@ -86,10 +122,12 @@
                 (go-try-
                  (let [{:keys [header meta value]} @data
                        baos (ByteArrayOutputStream. *output-stream-buffer-size*)
-              ;; Get generation from bucket's cache (set during read)
+              ;; The generation read for this key. `-sync` runs on a DIFFERENT blob
+              ;; record than the read did — `update-blob` creates its own — so it
+              ;; comes from the bucket-wide cache that `-read-header` fills.
                        current-generation (when-let [cache (:generation-cache bucket-store)]
                                             (get @cache blob-key))
-                       optimistic-locking-retries (get-in env [:config :optimistic-locking-retries] 0)]
+                       expected-revision (:expected-revision env)]
                    (if (and header meta value)
                      (do
                        (.write baos #^bytes header)
@@ -97,14 +135,33 @@
                        (.write baos #^bytes value)
                        (let [bytes (.toByteArray baos)
                              bid (blob-id bucket store-path blob-key)]
-                         (if (and (pos? optimistic-locking-retries) current-generation)
-                  ;; Use conditional write with generation - throw on conflict for retry
-                           (when-not (write-blob-conditional client bid bytes current-generation)
-                             (throw (ex-info "Optimistic lock conflict"
-                                             {:type :optimistic-lock-conflict
-                                              :key blob-key
-                                              :generation current-generation})))
-                  ;; Regular write without generation check
+                         (if expected-revision
+                  ;; FENCED. konserve has already compared the revision it read
+                  ;; against the caller's; the generation precondition closes the
+                  ;; window BETWEEN that read and this write, which is the half no
+                  ;; counter can do. Both together are the compare-and-set.
+                  ;;
+                  ;; A create-if-absent has no generation to match, and says so.
+                           (let [precondition (if (= absent expected-revision)
+                                                :absent
+                                                current-generation)]
+                             (when-not precondition
+                    ;; No generation means no read happened, so there is nothing
+                    ;; to fence against. REFUSE rather than write unconditionally:
+                    ;; the previous code did the latter whenever the cache was
+                    ;; cold or `:optimistic-locking-retries` sat at its default,
+                    ;; silently withholding the guarantee that was asked for.
+                               (throw (ex-info (str "Cannot honour :expected-revision: no generation was read "
+                                                    "for this key, so the write cannot be made conditional.")
+                                               {:type :konserve/conditional-write-unsupported
+                                                :key  blob-key})))
+                             (when-not (write-blob-conditional client bid bytes precondition)
+                               (throw (ex-info (str "Conditional write rejected: the stored generation is not "
+                                                    "the one this value was derived from.")
+                                               {:type     :konserve/revision-mismatch
+                                                :key      blob-key
+                                                :expected expected-revision}))))
+                  ;; Unfenced: an ordinary write, exactly as before.
                            (write-blob client bid bytes)))
                        (.close baos)
                        (reset! data {})
@@ -122,26 +179,34 @@
                 (go-try-
         ;; first access is always to header, after it is cached
                  (when-not @fetched-object
-                   (let [optimistic-locking-retries (get-in env [:config :optimistic-locking-retries] 0)
-                         bid (blob-id bucket store-path blob-key)
-                         response (if (pos? optimistic-locking-retries)
-                           ;; Fetch with generation for optimistic locking
-                                    (read-blob-with-generation client bid)
-                           ;; Regular fetch — a genuine miss (404) is ::not-found so
-                           ;; the read-first (PReadMissSafe) path reports a clean miss.
-                                    (try {:data (read-blob client bid) :generation nil}
-                                         (catch StorageException e
-                                           (if (= 404 (.getCode e)) ::not-found (throw e)))))]
+                   (let [bid (blob-id bucket store-path blob-key)
+                         ;; ALWAYS read the generation. It arrives on the response
+                         ;; we already have — `.getGeneration` costs no extra round
+                         ;; trip — so gating it on a config knob only left the fence
+                         ;; with no token to match against, which is how the old
+                         ;; path came to write unconditionally whenever the knob sat
+                         ;; at its default.
+                         response (read-blob-with-generation client bid)]
                      (cond
                        ;; PReadMissSafe: an absent key throws store-key-not-found-ex,
                        ;; which io-operation converts to the caller's :not-found.
                        (= response ::not-found)
                        (throw (store-key-not-found-ex blob-key))
-            ;; If read fails during optimistic locking (concurrent update), signal conflict
-                       (and (pos? optimistic-locking-retries) (nil? response))
-                       (throw (ex-info "Optimistic lock conflict - blob was concurrently modified during read"
-                                       {:type :optimistic-lock-conflict
-                                        :key blob-key}))
+            ;; Deleted between the `.get` and the `.getContent`. Reported as a
+            ;; MISS, which is what an unfenced read got before the generation was
+            ;; always fetched — turning it into an error here made an ordinary
+            ;; read fail merely because another writer was active, which the
+            ;; emulator's own concurrency test caught immediately.
+            ;;
+            ;; Safe for a fenced write too: konserve then sees the key as absent,
+            ;; so a caller holding a real revision is correctly rejected, and a
+            ;; create-if-absent falls to `ifGenerationMatch=0`, which GCS
+            ;; evaluates against whatever is actually there.
+                       ;; `read-blob-with-generation` no longer yields nil: a stale
+                       ;; generation is retried there, since the only honest answer
+                       ;; is the newer state.
+                       (nil? response)
+                       (throw (store-key-not-found-ex blob-key))
                        :else
                        (do
                          (reset! fetched-object (:data response))
@@ -249,6 +314,17 @@
     (if (:sync? env) nil (go-try- nil))))
 
 (defrecord CloudStorageBucket [client location bucket store-path generation-cache]
+  ;; GCS evaluates the precondition — `ifGenerationMatch`, checked by GCS itself —
+  ;; so konserve adds no mechanism of its own: no sidecar blob, no lock it would
+  ;; take. Declared rather than inferred from the domain, since how far a
+  ;; guarantee reaches and who evaluates it are separate questions.
+  protocols/PSelfConditionalWrite
+
+  protocols/PConditionalWrite
+  ;; `:global`. The comparison happens in GCS, so it holds against every writer
+  ;; anywhere, not merely those sharing a filesystem or a heap.
+  (-conditional-write-domain [_] :global)
+
   impl/PBackingStore
   (-create-blob [this blob-key env]
     (async+sync (:sync? env) *default-sync-translation*

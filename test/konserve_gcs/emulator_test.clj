@@ -4,7 +4,8 @@
    Run with: docker-compose up -d
    Then: clojure -X:test"
   (:require [clojure.test :refer [deftest testing is]]
-            [konserve.compliance-test :refer [compliance-test]]
+            [konserve.compliance-test :refer [compliance-test
+                                              conditional-write-compliance-test]]
             [konserve.impl.storage-layout :as sl]
             [konserve-gcs.core :as gcs]
             [konserve.core :as k]
@@ -35,6 +36,82 @@
   (let [client (gcs/cloud-storage-client spec)]
     (when-not (gcs/get-bucket client (:bucket spec))
       (gcs/create-bucket client (:location spec) (:bucket spec)))))
+
+(deftest emulator-conditional-write-test
+  (testing "the `:expected-revision` contract against the emulator.
+
+            konserve's shared contract, called rather than restated — a backend
+            that restates it drifts. NOTE the emulator must be current: older
+            fake-gcs-server images accept `ifGenerationMatch` and ignore it, so a
+            stale image turns this suite green while fencing nothing. Verified by
+            hand against this one: a stale generation and `ifGenerationMatch=0` on
+            an existing object both return 412."
+    (let [spec (assoc emulator-spec :backend :gcs
+                      :store-path (str "cas-" (UUID/randomUUID))
+                      :id (random-store-id))]
+      (ensure-bucket spec)
+      (try (store/delete-store spec {:sync? true}) (catch Exception _))
+      (let [st (store/create-store spec {:sync? true})]
+        (try
+          (is (= :global (k/conditional-write-domain st))
+              "GCS evaluates the precondition, so the reach is every writer anywhere")
+          (conditional-write-compliance-test st)
+          (finally
+            (store/release-store spec st {:sync? true})
+            (store/delete-store spec {:sync? true})))))))
+
+(deftest emulator-concurrent-fenced-counter-test
+  (testing "concurrent increments converge when the caller fences and retries, and
+            no update is lost.
+
+            The contract alone cannot establish this: single-threaded, konserve's
+            own `check-revision!` catches a stale token without the storage ever
+            being asked to compare anything — measured on konserve-redis, where
+            the contract still passed with the CAS replaced by a plain write. Only
+            a concurrent test tells an honest fence from a claimed one."
+    (let [spec (assoc emulator-spec :backend :gcs
+                      :store-path (str "cas-" (UUID/randomUUID))
+                      :id (random-store-id))]
+      (ensure-bucket spec)
+      (try (store/delete-store spec {:sync? true}) (catch Exception _))
+      (let [init (store/create-store spec {:sync? true})
+            _ (k/assoc-in init [:counter] 0 {:sync? true})
+            _ (store/release-store spec init {:sync? true})
+            threads 4 per-thread 8
+            expected (* threads per-thread)
+            conflicts (atom 0)
+            unexpected (atom [])
+            fs (doall
+                (for [_ (range threads)]
+                  (future
+                    (let [st (store/connect-store spec {:sync? true})]
+                      (try
+                        (dotimes [_ per-thread]
+                          (loop [tries 0]
+                            (let [rev (k/revision st :counter {:sync? true})
+                                  r (try (k/update-in st [:counter] (fnil inc 0)
+                                                      {:sync? true :expected-revision rev})
+                                         ::ok
+                                         (catch Exception e (or (:type (ex-data e)) ::other)))]
+                              (cond
+                                (= ::ok r) :done
+                                (= :konserve/revision-mismatch r)
+                                (do (swap! conflicts inc)
+                                    (if (< tries 500)
+                                      (recur (inc tries))
+                                      (swap! unexpected conj :retries-exhausted)))
+                                :else (swap! unexpected conj r)))))
+                        (finally (store/release-store spec st {:sync? true})))))))]
+        (doseq [f fs] @f)
+        (let [fin (store/connect-store spec {:sync? true})]
+          (is (empty? @unexpected) (str "unexpected failures: " (pr-str @unexpected)))
+          (is (= expected (k/get-in fin [:counter] nil {:sync? true}))
+              "every increment must survive")
+          (is (pos? @conflicts)
+              (str "the threads must actually have contended (" @conflicts "); "
+                   "a run with none shows the fence held but not that it was needed"))
+          (store/release-store spec fin {:sync? true}))
+        (store/delete-store spec {:sync? true})))))
 
 (deftest emulator-compliance-sync-test
   (testing "GCS compliance test with emulator (sync)"
@@ -117,64 +194,6 @@
 
         (is (false? (store/store-exists? spec1 {:sync? true})))
         (is (false? (store/store-exists? spec2 {:sync? true})))))))
-
-(deftest emulator-optimistic-locking-concurrent-test
-  (testing "Concurrent updates with optimistic locking - multiple store instances"
-    (ensure-bucket emulator-spec)
-    (let [store-id (str "optimistic-test-" (UUID/randomUUID))
-          spec (assoc emulator-spec
-                      :backend :gcs
-                      :store-path store-id
-                      :id (random-store-id)
-                      :config {:optimistic-locking-retries 50})  ;; High retry count for concurrent test
-          ;; Clean up first
-          _ (try (store/delete-store spec {:sync? true}) (catch Exception _))
-          ;; Create initial store to set up counter
-          s-init (store/create-store spec {:sync? true})
-          _ (k/assoc-in s-init [:counter] 0 {:sync? true})
-          _ (store/release-store spec s-init {:sync? true})
-
-          num-threads 5
-          increments-per-thread 10
-          expected-total (* num-threads increments-per-thread)
-
-          ;; Track retry count and errors
-          error-count (atom 0)
-          success-count (atom 0)
-
-          ;; Run concurrent updates - each thread connects to the existing store
-          futures (doall
-                   (for [thread-id (range num-threads)]
-                     (future
-                       ;; Each thread connects to the same GCS store (separate instance, same data)
-                       (let [thread-store (store/connect-store spec {:sync? true})]
-                         (try
-                           (dotimes [_i increments-per-thread]
-                             (try
-                               ;; Use truly synchronous mode so retry logic works with try/catch
-                               (k/update-in thread-store [:counter] (fnil inc 0) {:sync? true})
-                               (swap! success-count inc)
-                               (catch Exception e
-                                 (swap! error-count inc)
-                                 (throw e))))
-                           (finally
-                             (store/release-store spec thread-store {:sync? true})))))))]
-
-      ;; Wait for all threads to complete
-      (doseq [f futures]
-        @f)
-
-      ;; Verify final count
-      (let [s-final (store/connect-store spec {:sync? true})
-            final-count (k/get-in s-final [:counter] nil {:sync? true})]
-        (println "Successful updates:" @success-count)
-        (println "Errors encountered:" @error-count)
-        (is (= expected-total final-count)
-            (str "Expected " expected-total " but got " final-count))
-        (store/release-store spec s-final {:sync? true}))
-
-      ;; Clean up
-      (store/delete-store spec {:sync? true}))))
 
 (deftest emulator-read-miss-safe-marker-test
   (testing "GCS backing implements PReadMissSafe (io-operation skips the -blob-exists? probe on reads)"
