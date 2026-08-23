@@ -11,17 +11,13 @@
  :aliases
  {:dev
   {:extra-paths ["test"]
-   :extra-deps {com.literalco/konserve-compliance-tests {:git/url "https://github.com/The-Literal-Company/konserve-compliance-tests.git"
-                                                         :git/sha "0fb62c46e2317d143dbf30001b6e36cad56de86f"
-                                                         :exclusions [org.replikativ/konserve]}
+   :extra-deps {
                 com.github.pkpkpk/fress {:mvn/version "0.4.312"
                                          :exclusions [org.clojure/clojurescript]}
                 lambdaisland/kaocha {:mvn/version "1.60.977"}}}
   :test
   {:extra-paths ["test"]
-   :extra-deps {com.literalco/konserve-compliance-tests {:git/url "https://github.com/The-Literal-Company/konserve-compliance-tests.git"
-                                                         :git/sha "0fb62c46e2317d143dbf30001b6e36cad56de86f"
-                                                         :exclusions [org.replikativ/konserve]}
+   :extra-deps {
                 com.github.pkpkpk/fress {:mvn/version "0.4.312"
                                          :exclusions [org.clojure/clojurescript]}
                 lambdaisland/kaocha {:mvn/version "1.60.977"}}}
