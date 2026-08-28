@@ -5,10 +5,12 @@
              :refer [PBackingLock PReadMissSafe store-key-not-found-ex -delete-store]]
             [konserve.utils :refer [async+sync *default-sync-translation*]]
             [konserve.store :as store]
+            [clojure.string :as str]
             [superv.async :refer [go-try- <?-]]
             [replikativ.logging :as log])
   (:import [java.io ByteArrayInputStream ByteArrayOutputStream]
            [java.util Arrays]
+           [com.google.api.gax.paging Page]
            [com.google.cloud.storage Blob
             Blob$BlobSourceOption
             BlobId
@@ -22,12 +24,26 @@
             Storage$BucketGetOption
             Storage$BucketTargetOption
             Storage$CopyRequest
+            CopyWriter
             StorageException
             StorageOptions]))
 
 (def ^:dynamic *default-bucket* "konserve")
 (def ^:dynamic *output-stream-buffer-size* (* 1024 1024))
 (def ^:dynamic *deletion-batch-size* 1000)
+
+(def ^:private ^"[Lcom.google.cloud.storage.Storage$BlobGetOption;" no-blob-get-opts
+  (into-array Storage$BlobGetOption []))
+(def ^:private ^"[Lcom.google.cloud.storage.Storage$BlobSourceOption;" no-blob-source-opts
+  (into-array Storage$BlobSourceOption []))
+(def ^:private ^"[Lcom.google.cloud.storage.Storage$BlobTargetOption;" no-blob-target-opts
+  (into-array Storage$BlobTargetOption []))
+(def ^:private ^"[Lcom.google.cloud.storage.Storage$BucketGetOption;" no-bucket-get-opts
+  (into-array Storage$BucketGetOption []))
+(def ^:private ^"[Lcom.google.cloud.storage.Storage$BucketTargetOption;" no-bucket-target-opts
+  (into-array Storage$BucketTargetOption []))
+(def ^:private ^"[Lcom.google.cloud.storage.Blob$BlobSourceOption;" no-content-opts
+  (into-array Blob$BlobSourceOption []))
 
 (defn ^BlobId blob-id
   ([bucket blob-store-path]
@@ -36,14 +52,12 @@
    (BlobId/of bucket (str store-path "/" blob-key))))
 
 (defn write-blob
-  [client blob-id bytes]
-  (let [blob-info (.build (BlobInfo/newBuilder ^BlobId blob-id))
-        opts (into-array Storage$BlobTargetOption [])]
-    (.create client ^BlobInfo blob-info #^bytes bytes #^Storage$BlobTargetOption opts)))
+  [^Storage client blob-id bytes]
+  (let [^BlobInfo blob-info (.build (BlobInfo/newBuilder ^BlobId blob-id))]
+    (.create client blob-info ^bytes bytes no-blob-target-opts)))
 
-(defn read-blob [client blob-id]
-  (let [opts (into-array Storage$BlobSourceOption [])]
-    (.readAllBytes client blob-id opts)))
+(defn read-blob [^Storage client ^BlobId blob-id]
+  (.readAllBytes client blob-id no-blob-source-opts))
 
 (defn read-blob-with-generation
   "Read blob and return {:data :generation}, ::not-found if the blob is genuinely
@@ -67,10 +81,9 @@
   ;; rather than spin.
   (loop [attempt 0]
     (let [result (try
-                   (let [opts (into-array Storage$BlobGetOption [])
-                         ^Blob blob (.get client blob-id opts)]
+                   (let [^Blob blob (.get client blob-id no-blob-get-opts)]
                      (if blob
-                       {:data (.getContent blob (into-array Blob$BlobSourceOption []))
+                       {:data (.getContent blob no-content-opts)
                         :generation (.getGeneration blob)}
                        ::not-found))
                    (catch StorageException e
@@ -103,7 +116,8 @@
    412 is the refusal in both cases."
   [^Storage client ^BlobId blob-id ^bytes bytes expected-generation]
   (try
-    (let [blob-info (.build (BlobInfo/newBuilder blob-id))
+    (let [^BlobInfo blob-info (.build (BlobInfo/newBuilder blob-id))
+          ^"[Lcom.google.cloud.storage.Storage$BlobTargetOption;"
           opts (into-array Storage$BlobTargetOption
                            [(Storage$BlobTargetOption/generationMatch
                              (if (= :absent expected-generation) 0 (long expected-generation)))])]
@@ -250,36 +264,35 @@
 
 (defn ^Boolean delete-blob
   "Delete blob. Returns true if deleted, false if not found."
-  [client bucket store-path blob-key]
+  [^Storage client bucket store-path blob-key]
   (try
-    (let [blob-id (blob-id bucket store-path blob-key)
-          opts (into-array Storage$BlobSourceOption [])]
-      (.delete client blob-id opts))
+    (let [blob-id (blob-id bucket store-path blob-key)]
+      (.delete client blob-id no-blob-source-opts))
     (catch StorageException e
       ;; Return false if blob not found (404)
       (if (= 404 (.getCode e))
         false
         (throw e)))))
 
-(defn ^Boolean delete-many-blobs
-  [client bucket blob-store-paths]
-  (let [blob-ids (map (partial blob-id bucket) blob-store-paths)]
-    (.delete client #^BlobId (into-array BlobId blob-ids))))
+(defn delete-many-blobs
+  [^Storage client bucket blob-store-paths]
+  (let [blob-ids (map (partial blob-id bucket) blob-store-paths)
+        ^"[Lcom.google.cloud.storage.BlobId;" ids (into-array BlobId blob-ids)]
+    (.delete client ids)))
 
 (defn ^Blob blob-exists?
-  [client bucket store-path blob-key]
-  (let [blob-id (blob-id bucket store-path blob-key)
-        opts (into-array Storage$BlobGetOption [])]
-    (.get client blob-id opts)))
+  [^Storage client bucket store-path blob-key]
+  (let [blob-id (blob-id bucket store-path blob-key)]
+    (.get client blob-id no-blob-get-opts)))
 
 (defn ^Blob copy-blob
   "Copy blob from one key to another. Returns nil if source doesn't exist."
-  [client bucket store-path from-blob-key to-blob-key]
+  [^Storage client bucket store-path from-blob-key to-blob-key]
   (try
     (let [from-blob-id (blob-id bucket store-path from-blob-key)
           to-blob-id (blob-id bucket store-path to-blob-key)
           copy-request (Storage$CopyRequest/of ^BlobId from-blob-id ^BlobId to-blob-id)
-          copy-writer (.copy client copy-request)]
+          ^CopyWriter copy-writer (.copy client copy-request)]
       (.getResult copy-writer))
     (catch StorageException e
       ;; Return nil if source blob not found (404)
@@ -287,25 +300,42 @@
         (throw e)))))
 
 (defn get-bucket
-  [client bucket-name]
-  (let [opts (into-array Storage$BucketGetOption [])]
-    (.get client bucket-name opts)))
+  [^Storage client ^String bucket-name]
+  (.get client bucket-name no-bucket-get-opts))
 
-(defn ^Bucket create-bucket [client location bucket]
-  (let [bucket-info (-> (BucketInfo/newBuilder bucket)
-                        (.setLocation location)
-                        (.build))
-        opts (into-array Storage$BucketTargetOption [])]
-    (.create client bucket-info opts)))
+(defn ^Bucket create-bucket [^Storage client location bucket]
+  (let [^BucketInfo bucket-info (-> (BucketInfo/newBuilder bucket)
+                                    (.setLocation location)
+                                    (.build))]
+    (.create client bucket-info no-bucket-target-opts)))
+
+(defn- blob-names
+  "The names of a blob seq."
+  [blobs]
+  (map (fn [^Blob b] (.getName b)) blobs))
+
+(defn- close-client!
+  [^Storage client]
+  (.close client))
+
+(defn- store-key?
+  "A blob name that belongs to this store."
+  [^String store-path ^String k]
+  (and (str/starts-with? k store-path)
+       (or (str/ends-with? k ".ksv")
+           (str/ends-with? k ".ksv.new")
+           (str/ends-with? k ".ksv.backup"))))
 
 (defn list-objects
-  [client bucket store-path]
-  (let [bucket (.get client bucket (into-array Storage$BucketGetOption []))
+  [^Storage client ^String bucket store-path]
+  (let [^Bucket bucket (.get client bucket no-bucket-get-opts)
         opts [(Storage$BlobListOption/pageSize 100)
               (Storage$BlobListOption/includeFolders true)
               (Storage$BlobListOption/delimiter "/")
               (Storage$BlobListOption/prefix (str store-path "/"))]
-        blobs (.list bucket (into-array Storage$BlobListOption opts))]
+        ^"[Lcom.google.cloud.storage.Storage$BlobListOption;"
+        list-opts (into-array Storage$BlobListOption opts)
+        ^Page blobs (.list bucket list-opts)]
     (seq (.iterateAll blobs))))
 
 (extend-protocol PBackingLock
@@ -360,27 +390,19 @@
                 (go-try-
                  (when (get-bucket client bucket)
                    (let [blobs (list-objects client bucket store-path)
-                         keys (filter (fn [key]
-                                        (and (.startsWith key store-path)
-                                             (or (.endsWith key ".ksv")
-                                                 (.endsWith key ".ksv.new")
-                                                 (.endsWith key ".ksv.backup"))))
-                                      (map #(.getName %) blobs))]
+                         keys (filter (partial store-key? store-path)
+                                      (blob-names blobs))]
                      (doseq [keys (->> keys
                                        (partition *deletion-batch-size* *deletion-batch-size* []))]
                        (delete-many-blobs client bucket keys)))
-                   (.close client)))))
+                   (close-client! client)))))
   (-keys [_ env]
     (async+sync (:sync? env) *default-sync-translation*
                 (go-try-
                  (let [blobs (list-objects client bucket store-path)
-                       keys (map #(.getName %) blobs)]
+                       keys (blob-names blobs)]
                    (->> keys
-                        (filter (fn [key]
-                                  (and (.startsWith key store-path)
-                                       (or (.endsWith key ".ksv")
-                                           (.endsWith key ".ksv.new")
-                                           (.endsWith key ".ksv.backup")))))
+                        (filter (partial store-key? store-path))
                ;; remove store-id prefix
                         (map #(subs % (inc (count store-path))))))))))
 
@@ -464,25 +486,25 @@
 ;; Marker key for store existence
 (def ^:private store-marker-key ".konserve-store-metadata")
 
-(defn- marker-blob-id [bucket store-path]
+(defn- ^BlobId marker-blob-id [bucket store-path]
   (blob-id bucket store-path store-marker-key))
 
 (defn store-exists?
   "Check if a konserve store exists at the given spec."
   [spec & {:keys [opts]}]
-  (let [client (cloud-storage-client spec)
+  (let [^Storage client (cloud-storage-client spec)
         store-path (spec->store-path spec)
         bid (marker-blob-id (:bucket spec) store-path)]
-    (some? (.get client bid (into-array Storage$BlobGetOption [])))))
+    (some? (.get client bid no-blob-get-opts))))
 
 (defn- write-store-marker [client bucket store-path]
   (let [bid (marker-blob-id bucket store-path)
         data (.getBytes (pr-str {:created-at (java.time.Instant/now)}) "UTF-8")]
     (write-blob client bid data)))
 
-(defn- delete-store-marker [client bucket store-path]
+(defn- delete-store-marker [^Storage client bucket store-path]
   (let [bid (marker-blob-id bucket store-path)]
-    (.delete client bid (into-array Storage$BlobSourceOption []))))
+    (.delete client bid no-blob-source-opts)))
 
 ;; =============================================================================
 ;; Multimethod Registration for konserve.store dispatch
