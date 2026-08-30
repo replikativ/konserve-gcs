@@ -1,5 +1,32 @@
 {:paths ["src"]
- :deps {com.google.cloud/google-cloud-storage   {:mvn/version "2.69.0"}
+ :deps {;; Konserve uses StorageOptions/newBuilder, whose documented/default
+        ;; transport is HTTP/JSON. google-cloud-storage also ships an optional
+        ;; gRPC implementation in the same artifact; keeping its graph adds a
+        ;; second transport, protobuf/gRPC stubs, telemetry exporters, and
+        ;; native TLS libraries for every platform to every consumer. Version
+        ;; 2.53.3+ explicitly supports running without the gRPC classes.
+        com.google.cloud/google-cloud-storage
+        {:mvn/version "2.69.0"
+         :exclusions [com.google.cloud/google-cloud-core-grpc
+                      com.google.api/gax-grpc
+                      com.google.api.grpc/grpc-google-cloud-storage-v2
+                      com.google.api.grpc/gapic-google-cloud-storage-v2
+                      io.grpc/grpc-inprocess
+                      io.grpc/grpc-alts
+                      io.grpc/grpc-auth
+                      io.grpc/grpc-core
+                      io.grpc/grpc-protobuf
+                      io.grpc/grpc-protobuf-lite
+                      io.grpc/grpc-netty-shaded
+                      io.grpc/grpc-opentelemetry
+                      io.grpc/grpc-grpclb
+                      io.grpc/grpc-googleapis
+                      io.grpc/grpc-xds
+                      io.grpc/grpc-services
+                      io.grpc/grpc-rls
+                      io.grpc/grpc-util
+                      io.grpc/grpc-stub
+                      org.conscrypt/conscrypt-openjdk-uber]}
         org.replikativ/konserve                 {:mvn/version "0.9.376"
                                                  :exclusions [com.github.pkpkpk/cljs-node-io
                                                               com.github.pkpkpk/fress
