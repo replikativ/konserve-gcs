@@ -15,7 +15,7 @@ jobs:
       - checkout
       - run:
           name: load namespace against pinned konserve
-          command: clojure -M -e "(require 'konserve-gcs.core)(println :loaded)"
+          command: clojure -M:test -e "(require '[clojure.test :as t] 'konserve-gcs.dependency-test)(let [{:keys [fail error]} (t/run-tests 'konserve-gcs.dependency-test)](when (or (pos? fail) (pos? error)) (System/exit 1)))"
 
   # Reflection is a latency cost on the JVM and a correctness cost under
   # native-image, where a reflective call resolves at run time and so works
