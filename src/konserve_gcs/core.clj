@@ -343,6 +343,10 @@
   (-release [_ env]
     (if (:sync? env) nil (go-try- nil))))
 
+;; An object that exists in a store's folder once the store has been created.
+;; `store-exists?` and the `-store-exists?` of the backing both look for it.
+(def ^:private store-marker-key ".konserve-store-metadata")
+
 (defrecord CloudStorageBucket [client location bucket store-path generation-cache]
   ;; GCS evaluates the precondition — `ifGenerationMatch`, checked by GCS itself —
   ;; so konserve adds no mechanism of its own: no sidecar blob, no lock it would
@@ -383,6 +387,12 @@
                  (when-not (get-bucket client bucket)
                    (log/info :konserve.gcs/creating-bucket (str "creating bucket " bucket))
                    (create-bucket client location bucket)))))
+  ;; konserve probes this on connect (konserve#179): an existing store is
+  ;; opened with a read, and only a missing one is created. The marker object is
+  ;; the same one `store-exists?` and the `:gcs` create method use.
+  (-store-exists? [_ env]
+    (async+sync (:sync? env) *default-sync-translation*
+                (go-try- (some? (blob-exists? client bucket store-path store-marker-key)))))
   (-sync-store [_ env]
     (if (:sync? env) nil (go-try- nil)))
   (-delete-store [_ env]
@@ -482,9 +492,6 @@
         store-path (spec->store-path spec)
         backing (CloudStorageBucket. (cloud-storage-client spec) (:location spec) (:bucket spec) store-path (atom {}))]
     (-delete-store backing complete-opts)))
-
-;; Marker key for store existence
-(def ^:private store-marker-key ".konserve-store-metadata")
 
 (defn- ^BlobId marker-blob-id [bucket store-path]
   (blob-id bucket store-path store-marker-key))
