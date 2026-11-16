@@ -27,7 +27,7 @@
                       io.grpc/grpc-util
                       io.grpc/grpc-stub
                       org.conscrypt/conscrypt-openjdk-uber]}
-        org.replikativ/konserve                 {:mvn/version "0.9.376"
+        org.replikativ/konserve                 {:mvn/version "0.9.394"
                                                  :exclusions [com.github.pkpkpk/cljs-node-io
                                                               com.github.pkpkpk/fress
                                                               fress/fress

@@ -26,7 +26,8 @@
             Storage$CopyRequest
             CopyWriter
             StorageException
-            StorageOptions]))
+            StorageOptions
+            StorageRetryStrategy]))
 
 (def ^:dynamic *default-bucket* "konserve")
 (def ^:dynamic *output-stream-buffer-size* (* 1024 1024))
@@ -343,6 +344,10 @@
   (-release [_ env]
     (if (:sync? env) nil (go-try- nil))))
 
+;; An object that exists in a store's folder once the store has been created.
+;; `store-exists?` and the `-store-exists?` of the backing both look for it.
+(def ^:private store-marker-key ".konserve-store-metadata")
+
 (defrecord CloudStorageBucket [client location bucket store-path generation-cache]
   ;; GCS evaluates the precondition — `ifGenerationMatch`, checked by GCS itself —
   ;; so konserve adds no mechanism of its own: no sidecar blob, no lock it would
@@ -383,6 +388,12 @@
                  (when-not (get-bucket client bucket)
                    (log/info :konserve.gcs/creating-bucket (str "creating bucket " bucket))
                    (create-bucket client location bucket)))))
+  ;; konserve probes this on connect (konserve#179): an existing store is
+  ;; opened with a read, and only a missing one is created. The marker object is
+  ;; the same one `store-exists?` and the `:gcs` create method use.
+  (-store-exists? [_ env]
+    (async+sync (:sync? env) *default-sync-translation*
+                (go-try- (some? (blob-exists? client bucket store-path store-marker-key)))))
   (-sync-store [_ env]
     (if (:sync? env) nil (go-try- nil)))
   (-delete-store [_ env]
@@ -425,6 +436,12 @@
   [{:keys [client project-id host]}]
   (or client
       (let [builder (StorageOptions/newBuilder)]
+        ;; The default strategy retries only operations that Google can prove are
+        ;; safe to repeat. The backup copy of an overwrite is a rewrite with no
+        ;; generation precondition, so a single 503 failed the write for good (and
+        ;; datahike's writer treats that as fatal). Copying the same object to the
+        ;; same backup key twice is harmless, so retry everything.
+        (.setStorageRetryStrategy builder (StorageRetryStrategy/getUniformStorageRetryStrategy))
         (when project-id
           (.setProjectId builder project-id))
         (when host
@@ -482,9 +499,6 @@
         store-path (spec->store-path spec)
         backing (CloudStorageBucket. (cloud-storage-client spec) (:location spec) (:bucket spec) store-path (atom {}))]
     (-delete-store backing complete-opts)))
-
-;; Marker key for store existence
-(def ^:private store-marker-key ".konserve-store-metadata")
 
 (defn- ^BlobId marker-blob-id [bucket store-path]
   (blob-id bucket store-path store-marker-key))

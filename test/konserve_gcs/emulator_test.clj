@@ -158,6 +158,30 @@
         (store/delete-store spec {:sync? true})
         (is (false? (store/store-exists? spec {:sync? true})))))))
 
+(deftest emulator-backing-store-exists-test
+  ;; konserve#179: connecting probes the backing's -store-exists? and opens an
+  ;; existing store with a read. A backing without the method fails every
+  ;; connect with an AbstractMethodError.
+  (testing "the backing answers -store-exists? for the marker of its own path"
+    (ensure-bucket emulator-spec)
+    (let [spec (assoc emulator-spec :backend :gcs
+                      :store-path "backing-exists-test" :id (random-store-id))
+          backing (fn [store-path]
+                    (gcs/->CloudStorageBucket (gcs/cloud-storage-client emulator-spec)
+                                              (:location emulator-spec)
+                                              (:bucket emulator-spec)
+                                              store-path
+                                              (atom {})))]
+      (try (store/delete-store spec {:sync? true}) (catch Exception _))
+      (is (false? (sl/-store-exists? (backing "backing-exists-test") {:sync? true})))
+      (let [s (store/create-store spec {:sync? true})]
+        (is (true? (sl/-store-exists? (backing "backing-exists-test") {:sync? true})))
+        (is (false? (sl/-store-exists? (backing "another-path") {:sync? true}))
+            "another store path in the same bucket is a different store")
+        (store/release-store spec s {:sync? true})
+        (store/delete-store spec {:sync? true})
+        (is (false? (sl/-store-exists? (backing "backing-exists-test") {:sync? true})))))))
+
 (deftest emulator-multi-store-test
   (testing "multiple stores in same bucket with different IDs"
     (ensure-bucket emulator-spec)
