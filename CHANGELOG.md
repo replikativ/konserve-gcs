@@ -4,6 +4,18 @@ All notable, user-visible changes to konserve-gcs are documented here.
 
 ## Unreleased
 
+### Changed
+- **Storage clients are shared, and a store no longer closes its client.** Every
+  `store-exists?`, `create-store`, `connect-store` and `delete-store` call built
+  its own `Storage` client; `connect-store` through `konserve.store` built two and
+  closed neither until release. `cloud-storage-client` now returns one shared
+  client per `:project-id` and `:host`, as konserve-s3 does per endpoint.
+  `release` and `delete-store` used to close the store's client, including one
+  the caller had passed in under `:client`, which then failed under every other
+  store using it (a sibling store, or a reconnect). They no longer close anything.
+  Call `konserve-gcs.core/shutdown-clients!` on process exit to close the shared
+  clients; a client you pass in is yours to close.
+
 ### Added
 - **Read-miss-safe reads (one object fetch, no metadata probe).** The GCS backing
   implements konserve's `PReadMissSafe` and its read path throws

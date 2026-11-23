@@ -314,10 +314,6 @@
   [blobs]
   (map (fn [^Blob b] (.getName b)) blobs))
 
-(defn- close-client!
-  [^Storage client]
-  (.close client))
-
 (defn- store-key?
   "A blob name that belongs to this store."
   [^String store-path ^String k]
@@ -394,8 +390,7 @@
                                       (blob-names blobs))]
                      (doseq [keys (->> keys
                                        (partition *deletion-batch-size* *deletion-batch-size* []))]
-                       (delete-many-blobs client bucket keys)))
-                   (close-client! client)))))
+                       (delete-many-blobs client bucket keys)))))))
   (-keys [_ env]
     (async+sync (:sync? env) *default-sync-translation*
                 (go-try-
@@ -420,16 +415,56 @@
    :store-path "test-store"
    :location "US-EAST1"})
 
+(defn- build-client ^Storage [{:keys [project-id host]}]
+  (let [builder (StorageOptions/newBuilder)]
+    (when project-id
+      (.setProjectId builder project-id))
+    (when host
+      (.setHost builder host))
+    (.getService (.build builder))))
+
+(def ^:private ^java.util.concurrent.ConcurrentHashMap client-cache
+  "client-key -> Delay<Storage>. A Storage client is thread-safe and owns its
+   transport; Google recommends one per project and endpoint, not one per
+   store operation. This backend used to build one for every
+   `store-exists?` / `create-store` / `connect-store` / `delete-store` call
+   -- and closed only the one a connected store held, on release. They are
+   now shared. Close them with `shutdown-clients!` on process exit."
+  (java.util.concurrent.ConcurrentHashMap.))
+
+(defn- client-key
+  "What distinguishes one Storage client from another. Bucket and store path
+   are NOT included: a client is scoped to a project and an endpoint, not to
+   a store."
+  [spec]
+  (select-keys spec [:project-id :host]))
+
 (defn cloud-storage-client
-  "Create a GCS client. Supports :host for emulator endpoint (e.g., 'http://localhost:4443')."
-  [{:keys [client project-id host]}]
+  "Return the Storage client for `spec`: the caller's own when the spec
+   carries one under :client, otherwise a shared client for the spec's
+   :project-id and :host (the latter for an emulator endpoint, e.g.
+   'http://localhost:4443'), built on first use.
+
+   Safe to call from many threads and for many stores. Stores never close the
+   client they are given -- neither a shared one nor the caller's. Call
+   `shutdown-clients!` to close the shared ones, e.g. on process exit; a
+   caller-supplied client is the caller's to close."
+  ^Storage [{:keys [client] :as spec}]
   (or client
-      (let [builder (StorageOptions/newBuilder)]
-        (when project-id
-          (.setProjectId builder project-id))
-        (when host
-          (.setHost builder host))
-        (.getService (.build builder)))))
+      @(.computeIfAbsent client-cache
+                         (client-key spec)
+                         (reify java.util.function.Function
+                           (apply [_ _] (delay (build-client spec)))))))
+
+(defn shutdown-clients!
+  "Close every shared Storage client and clear the cache. Call once on process
+   shutdown. Stores connected before this call must not be used after it;
+   `cloud-storage-client` builds fresh clients afterwards."
+  []
+  (doseq [d (vec (.values client-cache))]
+    (when (realized? d)
+      (try (.close ^Storage @d) (catch Throwable _))))
+  (.clear client-cache))
 
 (defn spec->store-path
   [{:keys [store-path store-id]}]
@@ -470,9 +505,14 @@
                          (assoc :opts opts))]
     (defaults/connect-default-store backing store-config)))
 
-(defn release [store env]
+(defn release
+  "Used to close the store's Storage client. Clients are now shared across
+   stores (see `cloud-storage-client`), and a client passed in by the caller
+   was never this store's to close, so releasing a store is a no-op. Call
+   `shutdown-clients!` on process exit to close the shared clients."
+  [_store env]
   (async+sync (:sync? env) *default-sync-translation*
-              (go-try- (.close ^Storage (:client (:backing store))))))
+              (go-try- nil)))
 
 (defn delete-store [spec & {:keys [opts]}]
   (assert (string? (:bucket spec)))

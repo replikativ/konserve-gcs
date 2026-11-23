@@ -200,3 +200,38 @@
     (ensure-bucket emulator-spec)
     (let [store (gcs/connect-store (assoc emulator-spec :store-path "miss-safe-marker") :opts {:sync? true})]
       (is (satisfies? sl/PReadMissSafe (:backing store))))))
+
+(deftest storage-clients-are-shared-and-outlive-a-store
+  (testing "one client per project and endpoint, whatever the bucket or store"
+    (let [a (gcs/cloud-storage-client (assoc emulator-spec :bucket "one" :store-path "a"))
+          b (gcs/cloud-storage-client (assoc emulator-spec :bucket "two" :store-path "b"))]
+      (is (identical? a b))
+      (is (not (identical? a (gcs/cloud-storage-client
+                              (assoc emulator-spec :project-id "another-project")))))))
+  (testing "a client passed in by the caller is used as it is"
+    (let [mine (gcs/cloud-storage-client (assoc emulator-spec :project-id "caller-owned"))]
+      (is (identical? mine (gcs/cloud-storage-client (assoc emulator-spec :client mine))))))
+  (testing "releasing or deleting one store leaves the client working for another"
+    (ensure-bucket emulator-spec)
+    (let [spec-a (assoc emulator-spec :backend :gcs :store-path (str "shared-a-" (UUID/randomUUID))
+                        :id (random-store-id))
+          spec-b (assoc emulator-spec :backend :gcs :store-path (str "shared-b-" (UUID/randomUUID))
+                        :id (random-store-id))
+          a (store/create-store spec-a {:sync? true})
+          b (store/create-store spec-b {:sync? true})]
+      (try
+        (k/assoc-in b [:kept] 1 {:sync? true})
+        (store/release-store spec-a a {:sync? true})
+        (is (= 1 (k/get-in b [:kept] nil {:sync? true})) "after a sibling's release")
+        (store/delete-store spec-a {:sync? true})
+        (is (= 1 (k/get-in b [:kept] nil {:sync? true})) "after a sibling's delete")
+        (let [again (store/connect-store spec-b {:sync? true})]
+          (is (= 1 (k/get-in again [:kept] nil {:sync? true})) "and a reconnect reads through it")
+          (store/release-store spec-b again {:sync? true}))
+        (finally
+          (store/release-store spec-b b {:sync? true})
+          (store/delete-store spec-b {:sync? true})))))
+  (testing "shutdown-clients! closes the shared clients; the next use builds a new one"
+    (let [before (gcs/cloud-storage-client emulator-spec)]
+      (gcs/shutdown-clients!)
+      (is (not (identical? before (gcs/cloud-storage-client emulator-spec)))))))
